@@ -1,4 +1,4 @@
-import os
+import sys
 import math
 from pymongo import MongoClient
 from gensim.corpora import Dictionary
@@ -6,11 +6,15 @@ from gensim.models import LdaModel
 import dotenv
 import datetime
 import argparse
-import pprint
 import logging
 import json
+from bson import json_util
+import matplotlib.colors as mcolors
+from collections import Counter
 
 parser = argparse.ArgumentParser()
+
+base = '/Users/JuanFelipe/GitHub/'
 
 parser.add_argument("--start", default="2020-03-03 00:00:00.0", type=str, help="Lower date to filter tweets")
 parser.add_argument("--end", default="{}".format(datetime.datetime.now()), type=str, help="Most recent date to filter tweets")
@@ -69,53 +73,97 @@ def train_model(dictionary, corpus):
     iterations=iterations,
     num_topics=topics,
     passes=passes,
-    eval_every=eval_every
+    eval_every=eval_every,
+    per_word_topics=True
   )
   
   return model
 
-def remap_topics(result):
-  mapped_topics = list()
-  for i in range(0, len(result)):
-    words = list()
-    for topic in result[i][0]:
-      word = {
-        "word": topic[1],
-        "score": float(topic[0])
+def process_data(model, dictionary, docs, tweets):
+  result = dict()
+  model_info = dict()
+  # Get colors for graphing pourpuses
+  colors = [color for name, color in mcolors.XKCD_COLORS.items()]
+  # Flatten docs to use counter
+  docs_flat = [w for w_list in docs for w in w_list]
+  counter = Counter(docs_flat)
+  
+  # Get all the relevant info from the model
+  for topic, words in model.show_topics(formatted=False):
+    words_dict = dict()
+    for word, importance in words:
+      # Importance and word count
+      word_obj = {
+        'count': counter[word],
+        'importance': float(importance)
       }
-      words.append(word)
-    topic_object = {
-      "topics": words,
-      "score": float(result[i][1])
+      words_dict[word] = word_obj
+    # Set some parameters: words, document count by dominant topic, document count by topic (a document can belong to
+    # multiple docs and the color used to graph the relevant topic
+    model_info[topic] = {
+      'words': words_dict,
+      'document_count': 0,
+      'weight_count': 0,
+      'color': colors[topic]
     }
-    mapped_topics.append(topic_object)
-  return mapped_topics
+  
+  # Relevant tweet info
+  for tweet in tweets:
+    doc = [hashtag["text"].lower() for hashtag in tweet["hashtags"]] if is_hashtag_model else tweet["tokenized_text"]
+    # Dominant topic in the doc
+    dominant_topic = (-1, 0.0)
+    # Dictionary of topics with their importance
+    topics = {}
+    topic_percentages, word_id_topics, word_id_phivalues = model[dictionary.doc2bow(doc)]
+    for topic in topic_percentages:
+      topics[topic[0]] = float(topic[1])
+      # Increase the topic's weight count
+      model_info[topic[0]]['weight_count'] += 1
+      # Set the dominant topic
+      if topic[1] > dominant_topic[1]:
+        dominant_topic = topic
+    # Increase the dominant topic's document count
+    model_info[dominant_topic[0]]['document_count'] += 1
+    tweet["dominant_topic"] = dominant_topic[0]
+    tweet["topics"] = topics
+    word_dominant_topic = [(model.id2word[wd], topic[0]) for wd, topic in word_id_topics]
+    # Set dictionary of the docs words in the relevant topic
+    tweet['text_topic'] = dict(word_dominant_topic)
+
+  now = datetime.datetime.now()
+  result["time_stamp"] = now.strftime("%d/%m/%Y %H:%M:%S")
+  result["tweets"] = tweets
+  result["model_info"] = model_info
+  json_result = json.dumps(result, default=json_util.default)
+  with open(base + "/thesis_web_app/backend/files/model_result.json", "w") as outfile:
+    outfile.write(json_result)
+    print('{"success":true, "message": "Success running the model and processing data"}')
 
 if __name__ == "__main__":
   dotenv.load_dotenv(".env")
+  # Get the tweets stored in the Mongo repo
+  tweets = list(get_tweets(isTest=True))
   
-  docs = [[hashtag["text"].lower() for hashtag in tweet["hashtags"]] for tweet in get_tweets(isTest=True)] if is_hashtag_model else [tweet["tokenized_text"] for tweet in get_tweets(isTest=True)]
+  # Collect the documents depending on the model wished to analyze
+  docs = [[hashtag["text"].lower() for hashtag in tweet["hashtags"]] for tweet in tweets] if is_hashtag_model else [tweet["tokenized_text"] for tweet in tweets]
   
   # Create a dictionary representation of the documents.
   dictionary = Dictionary(docs)
   
   # Filter out words that occur less than 20 documents, or more than 80% of the documents.
-  dictionary.filter_extremes(no_below=5, no_above=0.8)
+  # dictionary.filter_extremes(no_below=5, no_above=0.8)
   corpus = [dictionary.doc2bow(doc) for doc in docs]
-  
   log('Number of unique tokens: %d' % len(dictionary))
   log('Number of documents: %d' % len(corpus))
   try:
     if len(dictionary) > 1:
       model = train_model(dictionary, corpus)
+      process_data(model, dictionary, docs, tweets)
       top_topics = model.top_topics(corpus)  # , num_words=20)
       # Average topic coherence is the sum of topic coherences of all topics, divided by the number of topics.
       avg_topic_coherence = sum([t[1] for t in top_topics]) / topics
       log('Average topic coherence: %.4f.' % avg_topic_coherence)
-      mapped_topics = remap_topics(top_topics)
-      result = json.dumps(mapped_topics)
-      print(result)
     else:
-      print([])
-  except:
-    print([])
+      print('{"success": false, "message": "Dataset too small, please increase number of topics, include more accounts or increase the date range"}')
+  except Exception as e:
+    print('{"success": false, "message": "An error occured running the model ' + str(e.with_traceback(sys.exc_info()[2])) + '"}')
