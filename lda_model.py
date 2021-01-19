@@ -79,7 +79,7 @@ def train_model(dictionary, corpus):
   
   return model
 
-def process_data(model, dictionary, docs, tweets):
+def process_data(model, dictionary, docs, tweets, num_topics=topics):
   result = dict()
   model_info = dict()
   # Get colors for graphing pourpuses
@@ -89,7 +89,7 @@ def process_data(model, dictionary, docs, tweets):
   counter = Counter(docs_flat)
   
   # Get all the relevant info from the model
-  for topic, words in model.show_topics(formatted=False):
+  for topic, words in model.show_topics(formatted=False, num_topics=num_topics):
     words_dict = dict()
     for word, importance in words:
       # Importance and word count
@@ -106,7 +106,6 @@ def process_data(model, dictionary, docs, tweets):
       'weight_count': 0,
       'color': colors[topic]
     }
-  
   # Relevant tweet info
   for tweet in tweets:
     doc = [hashtag["text"].lower() for hashtag in tweet["hashtags"]] if is_hashtag_model else tweet["tokenized_text"]
@@ -166,4 +165,5 @@ if __name__ == "__main__":
     else:
       print('{"success": false, "message": "Dataset too small, please increase number of topics, include more accounts or increase the date range"}')
   except Exception as e:
+    #print(e.with_traceback())
     print('{"success": false, "message": "An error occured running the model ' + str(e.with_traceback(sys.exc_info()[2])) + '"}')
