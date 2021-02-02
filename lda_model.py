@@ -21,7 +21,8 @@ parser.add_argument("--end", default="{}".format(datetime.datetime.now()), type=
 parser.add_argument("--accounts", default="", type=str, help="List of accounts to filter tweets")
 parser.add_argument("--topics", required=True, type=int, help="Number of topics to execute the model")
 parser.add_argument("--logging", default=0, type=int, help="Whether or not to log")
-parser.add_argument("--hashtagmodel", default=0, type=int, help="Whether to execute LDA based on hashtags or based on tweet text")
+parser.add_argument("--hashtagmodel", default=0, type=int, help="Whether to execute LDA based on hashtags, on tweet text oe both")
+parser.add_argument("--keywords", default="", type=str, help="Interest words chosen by the user")
 
 args = parser.parse_args()
 
@@ -30,7 +31,8 @@ end = datetime.datetime.strptime(args.end, "%Y-%m-%d %H:%M:%S.%f")
 accounts = args.accounts
 topics = args.topics
 is_logging = args.logging == 1
-is_hashtag_model = args.hashtagmodel == 1
+hashtag_model = args.hashtagmodel
+keywords = args.keywords
 
 if is_logging:
   logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.INFO)
@@ -52,6 +54,12 @@ def get_tweets(isTest=False):
   if accounts:
     account_list = accounts.split()
     query["screen_name"] = { "$in": account_list }
+    
+  if hashtag_model == 1:
+    query["hashtags"] = {'$exists': True, '$ne': [] }
+  
+  if keywords:
+    query["$text"] = { '$search': keywords, '$language': 'es' }
   
   return db["tweets"].find(query)
 
@@ -108,7 +116,13 @@ def process_data(model, dictionary, docs, tweets, num_topics=topics):
     }
   # Relevant tweet info
   for tweet in tweets:
-    doc = [hashtag["text"].lower() for hashtag in tweet["hashtags"]] if is_hashtag_model else tweet["tokenized_text"]
+    if hashtag_model == 0:
+      doc = tweet["tokenized_text"]
+    elif hashtag_model == 1:
+      doc = [hashtag["text"].lower() for hashtag in tweet["hashtags"]]
+    else:
+      doc = tweet["tokenized_text"] + [hashtag["text"].lower() for hashtag in tweet["hashtags"]]
+      
     # Dominant topic in the doc
     dominant_topic = (-1, 0.0)
     # Dictionary of topics with their importance
@@ -144,8 +158,14 @@ if __name__ == "__main__":
   tweets = list(get_tweets(isTest=True))
   
   # Collect the documents depending on the model wished to analyze
-  docs = [[hashtag["text"].lower() for hashtag in tweet["hashtags"]] for tweet in tweets] if is_hashtag_model else [tweet["tokenized_text"] for tweet in tweets]
-  
+  if hashtag_model == 0:
+    docs = [tweet["tokenized_text"] for tweet in tweets]
+  elif hashtag_model == 1:
+    docs = [[hashtag["text"].lower() for hashtag in tweet["hashtags"]] for tweet in tweets]
+  else:
+    docs = list()
+    for tweet in tweets:
+      docs.append(tweet["tokenized_text"] + [hashtag["text"].lower() for hashtag in tweet["hashtags"]])
   # Create a dictionary representation of the documents.
   dictionary = Dictionary(docs)
   
